@@ -4,10 +4,12 @@ import { type Address, isAddress } from 'viem'
 import { normalize } from 'viem/ens'
 import {
   useAccount,
+  useCapabilities,
   useConnect,
   useDisconnect,
   useEnsAddress,
   useSendCalls,
+  useWaitForCallsStatus,
 } from 'wagmi'
 
 import './App.css'
@@ -142,6 +144,16 @@ export default function App() {
           canTransfer={isConnected && owner === connectedAddress}
         />
       )}
+
+      <footer>
+        <a
+          href="https://github.com/gskril/bulk-transfer-ens"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open source on GitHub ↗
+        </a>
+      </footer>
     </div>
   )
 }
@@ -172,6 +184,21 @@ function NamesPanel({
     : (resolvedEns ?? undefined)
 
   const { sendCalls, data, isPending, error, reset } = useSendCalls()
+
+  // EIP-5792 support: if the wallet can't answer wallet_getCapabilities it
+  // almost certainly can't handle wallet_sendCalls either.
+  const { error: capError, isLoading: capLoading } = useCapabilities({
+    account: owner,
+    query: { enabled: canTransfer },
+  })
+  const batchUnsupported = canTransfer && !capLoading && Boolean(capError)
+
+  // Resolve the batch id into a real transaction hash for the Etherscan link.
+  const { data: callsStatus } = useWaitForCallsStatus({
+    id: data?.id,
+    query: { enabled: Boolean(data?.id) },
+  })
+  const txHash = callsStatus?.receipts?.[0]?.transactionHash
 
   // Selecting a name to transfer also opts it into an address change by
   // default (if it has a resolver); deselecting clears both.
@@ -300,11 +327,32 @@ function NamesPanel({
           </p>
         )}
 
+        {batchUnsupported && (
+          <div className="warning">
+            Your connected wallet doesn’t support batched transactions (EIP-5792
+            <span className="mono"> wallet_sendCalls</span>). Switch to a wallet
+            that does — e.g. a recent MetaMask, Coinbase/Smart Wallet, or Rabby
+            — to bulk-transfer.
+          </div>
+        )}
+
         {error && <div className="error">{prettyError(error)}</div>}
         {data && (
           <div className="success">
-            Batch submitted. Call bundle id:{' '}
-            <span className="mono">{String(data.id ?? data)}</span>
+            {txHash ? (
+              <>
+                Batch confirmed.{' '}
+                <a
+                  href={`https://etherscan.io/tx/${txHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  View on Etherscan ↗
+                </a>
+              </>
+            ) : (
+              'Batch submitted — waiting for confirmation…'
+            )}
           </div>
         )}
       </div>
@@ -313,6 +361,7 @@ function NamesPanel({
         <button
           disabled={
             !canTransfer ||
+            batchUnsupported ||
             !recipientAddress ||
             (selectedNames.length === 0 && addrNames.length === 0) ||
             isPending
